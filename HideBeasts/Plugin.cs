@@ -28,8 +28,11 @@ public sealed class Plugin : IDalamudPlugin
     private const string CommandName = "/hidebeasts";
     private const string DebugCommandName = "/hidebeastsdebug";
 
-    // Frames between object table sweeps.
-    private const int FrameworkUpdateInterval = 6;
+    // Frames between object table sweeps. Kept at 1 (every frame): the game re-asserts the
+    // render flag on actively-animating pets almost every frame, so a slower sweep lets them
+    // flash back into view for a frame or two before we hide them again. Iterating the object
+    // table is cheap enough to do every frame.
+    private const int FrameworkUpdateInterval = 1;
 
     public Configuration Configuration { get; init; }
 
@@ -38,6 +41,16 @@ public sealed class Plugin : IDalamudPlugin
 
     // Beasts we've disabled the draw of, so we know what to re-enable later.
     private readonly HashSet<ulong> hiddenObjectIds = new();
+
+    // Reused each sweep to avoid per-frame allocations.
+    private readonly HashSet<ulong> seenThisSweep = new();
+
+    // Remembers, per owner object id, whether that owner is a Beastmaster. In a crowd the
+    // owner frequently streams out of the object table for a sweep or two while their pet is
+    // still visible; without this cache SearchById() would miss, we'd treat the pet as "not a
+    // beast", briefly un-hide it, then hide it again on the next sweep - the flicker the user
+    // sees. Cleared on zone change along with hiddenObjectIds.
+    private readonly Dictionary<ulong, bool> ownerIsBeastmaster = new();
 
     private uint? beastmasterJobId;
     private long nextJobLookupRetryTick;
@@ -131,6 +144,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         // Object table gets rebuilt on zone transition; nothing to restore.
         hiddenObjectIds.Clear();
+        ownerIsBeastmaster.Clear();
     }
 
     private unsafe void OnFrameworkUpdate(IFramework framework)
@@ -154,7 +168,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         var localId = localPlayer.GameObjectId;
-        var seenThisSweep = new HashSet<ulong>();
+        seenThisSweep.Clear();
 
         foreach (var obj in ObjectTable)
         {
@@ -162,10 +176,37 @@ public sealed class Plugin : IDalamudPlugin
                 continue;
 
             var ownerId = pet.OwnerId;
-            var isOthersBeast = ownerId != 0
-                                 && ownerId != localId
-                                 && ObjectTable.SearchById(ownerId) is IPlayerCharacter owner
-                                 && owner.ClassJob.RowId == jobId.Value;
+
+            // Not somebody else's pet - always leave visible.
+            if (ownerId == 0 || ownerId == localId)
+            {
+                Show(pet);
+                continue;
+            }
+
+            bool isOthersBeast;
+            if (ObjectTable.SearchById(ownerId) is IPlayerCharacter owner && owner.ClassJob.RowId != 0)
+            {
+                // Owner is resolvable this sweep - trust it and refresh the cache.
+                isOthersBeast = owner.ClassJob.RowId == jobId.Value;
+                ownerIsBeastmaster[ownerId] = isOthersBeast;
+            }
+            else if (ownerIsBeastmaster.TryGetValue(ownerId, out var cached))
+            {
+                // Owner streamed out (common in a crowd) but we've classified them before.
+                isOthersBeast = cached;
+            }
+            else
+            {
+                // Never seen this owner resolvable. Don't un-hide a pet we're already
+                // hiding just because the owner blipped out; otherwise leave it alone.
+                if (hiddenObjectIds.Contains(pet.GameObjectId))
+                {
+                    seenThisSweep.Add(pet.GameObjectId);
+                    Hide(pet);
+                }
+                continue;
+            }
 
             if (isOthersBeast)
             {
