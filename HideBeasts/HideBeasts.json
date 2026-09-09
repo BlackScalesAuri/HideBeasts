@@ -1,0 +1,23 @@
+{
+  "Author": "AzeraKih",
+  "Name": "Hide Beasts",
+  "InternalName": "HideBeasts",
+  "AssemblyVersion": "0.0.0.1",
+  "Description": "Automatically disables rendering of Beastmaster beast companions summoned by other players, to reduce visual clutter. Your own beast is never hidden.",
+  "ApplicableVersion": "any",
+  "RepoUrl": "https://github.com/BlackScalesAuri/HideBeasts",
+  "IconUrl": "https://raw.githubusercontent.com/BlackScalesAuri/HideBeasts/master/HideBeasts/Images/icon.png",
+  "Tags": [
+    "beastmaster",
+    "bst",
+    "visibility",
+    "pets"
+  ],
+  "DalamudApiLevel": 15,
+  "LoadRequiredState": 0,
+  "LoadSync": false,
+  "CanUnloadAsync": false,
+  "LoadPriority": 0,
+  "Punchline": "Hides other players' Beastmaster companions while keeping your own visible.",
+  "AcceptsFeedback": true
+}

@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download Dalamud
+        run: |
+          Invoke-WebRequest -Uri https://goatcorp.github.io/dalamud-distrib/latest.zip -OutFile latest.zip
+          Expand-Archive -Force latest.zip "$env:AppData\XIVLauncher\addon\Hooks\dev"
+
+      - name: Build
+        run: dotnet build HideBeasts.slnx --configuration Release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: HideBeasts/bin/x64/Release/HideBeasts/latest.zip
+          generate_release_notes: true
+
+      # Pings AzeraKih-Plugins so it regenerates pluginmaster.json immediately instead of
+      # waiting for its scheduled run. Needs a DISPATCH_TOKEN secret on this repo: a
+      # fine-grained PAT scoped to AzeraKih-Plugins with "Contents: Read and write".
+      # Skips quietly if that secret hasn't been set up.
+      - name: Notify plugin index
+        if: ${{ env.DISPATCH_TOKEN != '' }}
+        env:
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+        run: |
+          gh api repos/BlackScalesAuri/AzeraKih-Plugins/dispatches `
+            -X POST `
+            -f event_type=new-release
+        shell: pwsh
