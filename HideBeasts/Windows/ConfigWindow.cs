@@ -25,12 +25,7 @@ public class ConfigWindow : Window, IDisposable
         var enabled = configuration.Enabled;
         if (ImGui.Checkbox("Hide other players' beasts", ref enabled))
         {
-            configuration.Enabled = enabled;
-            configuration.Save();
-            if (!enabled)
-            {
-                plugin.RestoreAllHidden();
-            }
+            plugin.SetEnabled(enabled);
         }
 
         ImGui.TextWrapped(

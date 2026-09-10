@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Dalamud.Game.ClientState.Objects.Enums;
+using BattleNpcSubKind = Dalamud.Game.ClientState.Objects.Enums.BattleNpcSubKind;
 using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Game.Command;
@@ -9,7 +10,7 @@ using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
-using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.Game.Object;
 using HideBeasts.Windows;
 using Lumina.Excel.Sheets;
 
@@ -23,41 +24,38 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
+    [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
     private const string CommandName = "/hidebeasts";
-    private const string DebugCommandName = "/hidebeastsdebug";
 
-    // Frames between object table sweeps. Kept at 1 (every frame): the game re-asserts the
-    // render flag on actively-animating pets almost every frame, so a slower sweep lets them
-    // flash back into view for a frame or two before we hide them again. Iterating the object
-    // table is cheap enough to do every frame.
-    private const int FrameworkUpdateInterval = 1;
+    // ticks between full owner-resolve sweeps. the cheap per-tick enforcement covers the gap.
+    private const int ClassificationInterval = 10;
 
     public Configuration Configuration { get; init; }
 
     public readonly WindowSystem WindowSystem = new("HideBeasts");
     private ConfigWindow ConfigWindow { get; init; }
 
-    // Beasts we've disabled the draw of, so we know what to re-enable later.
-    private readonly HashSet<ulong> hiddenObjectIds = new();
+    // hidden beasts: object id -> table slot, so enforcement can re-find them without a scan.
+    private readonly Dictionary<ulong, int> hiddenPets = new();
 
-    // Reused each sweep to avoid per-frame allocations.
-    private readonly HashSet<ulong> seenThisSweep = new();
-
-    // Remembers, per owner object id, whether that owner is a Beastmaster. In a crowd the
-    // owner frequently streams out of the object table for a sweep or two while their pet is
-    // still visible; without this cache SearchById() would miss, we'd treat the pet as "not a
-    // beast", briefly un-hide it, then hide it again on the next sweep - the flicker the user
-    // sees. Cleared on zone change along with hiddenObjectIds.
+    // owner id -> is a Beastmaster. lets us keep hiding a pet while its owner is briefly out
+    // of the object table in a crowd. cleared on zone change.
     private readonly Dictionary<ulong, bool> ownerIsBeastmaster = new();
+
+    // reused every sweep so a sweep allocates nothing.
+    private readonly Dictionary<ulong, uint> playerJobs = new();
+    private readonly List<(ulong Id, int Index, nint Address, ulong OwnerId)> petsThisSweep = new();
+    private readonly HashSet<ulong> petIdsThisSweep = new();
+    private readonly List<ulong> pendingRemovals = new();
 
     private uint? beastmasterJobId;
     private long nextJobLookupRetryTick;
     private int frameCounter;
 
     public bool HasFoundBeastmasterJob => beastmasterJobId.HasValue;
-    public int HiddenCount => hiddenObjectIds.Count;
+    public int HiddenCount => hiddenPets.Count;
 
     public Plugin()
     {
@@ -68,11 +66,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Opens Hide Beasts settings."
-        });
-        CommandManager.AddHandler(DebugCommandName, new CommandInfo(OnDebugCommand)
-        {
-            HelpMessage = "Dumps every battle NPC near you to /xllog, to help identify beast companions."
+            HelpMessage = "open configuration.\n/hidebeasts on|off|toggle switches it without the window.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -100,59 +94,57 @@ public sealed class Plugin : IDalamudPlugin
         ConfigWindow.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
-        CommandManager.RemoveHandler(DebugCommandName);
     }
 
-    private void OnCommand(string command, string args) => ToggleConfigUi();
-
-    // Logs every non-player object nearby with its kind/subkind and owner's job. Useful for
-    // re-identifying beast companions if a patch changes how the game classifies them.
-    private void OnDebugCommand(string command, string args)
+    private void OnCommand(string command, string args)
     {
-        Log.Information("HideBeasts debug dump ---");
-        var count = 0;
-        foreach (var obj in ObjectTable)
+        switch (args.Trim().ToLowerInvariant())
         {
-            if (obj is IPlayerCharacter)
-                continue;
-
-            count++;
-            var subKind = obj is IBattleNpc npc ? npc.SubKind.ToString() : "n/a";
-            var ownerId = obj is IBattleNpc bnpc ? bnpc.OwnerId : 0UL;
-
-            var ownerInfo = "no owner";
-            if (ownerId != 0 && ObjectTable.SearchById(ownerId) is IPlayerCharacter owner)
-            {
-                var abbr = owner.ClassJob.IsValid ? owner.ClassJob.Value.Abbreviation.ToString() : "?";
-                ownerInfo = $"owner='{owner.Name}' job={abbr} (id={owner.ClassJob.RowId})";
-            }
-            else if (ownerId != 0)
-            {
-                ownerInfo = $"ownerId={ownerId} (not a resolvable player)";
-            }
-
-            Log.Information(
-                $"obj name='{obj.Name}' kind={obj.ObjectKind} subKind={subKind} baseId={obj.BaseId} {ownerInfo}");
+            case "":
+                ToggleConfigUi();
+                break;
+            case "on":
+                SetEnabled(true);
+                ChatGui.Print("[HideBeasts] Enabled - hiding other players' beasts.");
+                break;
+            case "off":
+                SetEnabled(false);
+                ChatGui.Print("[HideBeasts] Disabled - all beasts visible.");
+                break;
+            case "toggle":
+                SetEnabled(!Configuration.Enabled);
+                ChatGui.Print(Configuration.Enabled
+                    ? "[HideBeasts] Enabled - hiding other players' beasts."
+                    : "[HideBeasts] Disabled - all beasts visible.");
+                break;
+            default:
+                ChatGui.PrintError($"[HideBeasts] Unknown subcommand '{args.Trim()}'. Use: on, off, toggle.");
+                break;
         }
-
-        Log.Information($"HideBeasts debug dump end --- ({count} non-player objects total)");
     }
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
 
+    // shared by the config checkbox and the chat commands.
+    public void SetEnabled(bool enabled)
+    {
+        Configuration.Enabled = enabled;
+        Configuration.Save();
+
+        if (!enabled)
+            RestoreAllHidden();
+    }
+
     private void OnTerritoryChanged(uint territoryType)
     {
         // Object table gets rebuilt on zone transition; nothing to restore.
-        hiddenObjectIds.Clear();
+        hiddenPets.Clear();
         ownerIsBeastmaster.Clear();
+        frameCounter = 0;
     }
 
     private unsafe void OnFrameworkUpdate(IFramework framework)
     {
-        if (++frameCounter < FrameworkUpdateInterval)
-            return;
-        frameCounter = 0;
-
         // Resolve regardless of Enabled, so the settings window stays accurate and hiding
         // can start immediately once toggled on.
         var jobId = GetBeastmasterJobId();
@@ -160,106 +152,133 @@ public sealed class Plugin : IDalamudPlugin
         if (!Configuration.Enabled)
             return;
 
-        var localPlayer = ObjectTable.LocalPlayer;
-        if (!ClientState.IsLoggedIn || localPlayer == null)
+        if (!ClientState.IsLoggedIn || ObjectTable.LocalPlayer is not { } localPlayer || jobId == null)
             return;
 
-        if (jobId == null)
+        // the game re-enables draw on pets that move or cast, so re-hide the known ones
+        // every tick. cheap - it only touches slots we already track.
+        EnforceHidden();
+
+        if (++frameCounter < ClassificationInterval)
             return;
+        frameCounter = 0;
 
-        var localId = localPlayer.GameObjectId;
-        seenThisSweep.Clear();
+        Classify(localPlayer.GameObjectId, jobId.Value);
+    }
 
+    // re-hide known pets whose draw the game turned back on.
+    private unsafe void EnforceHidden()
+    {
+        foreach (var (id, index) in hiddenPets)
+        {
+            var obj = ObjectTable[index];
+            if (obj is null || obj.GameObjectId != id)
+                continue; // slot's empty or reused now; next sweep drops it
+
+            var gameObject = (GameObject*)obj.Address;
+            if (gameObject is not null && gameObject->DrawObject is not null)
+                gameObject->DisableDraw();
+        }
+    }
+
+    // full sweep: find nearby pets, work out whose they are, hide other Beastmasters'.
+    private unsafe void Classify(ulong localId, uint beastJobId)
+    {
+        playerJobs.Clear();
+        petsThisSweep.Clear();
+        petIdsThisSweep.Clear();
+
+        // one pass: grab player jobs and pets together, no per-pet SearchById.
         foreach (var obj in ObjectTable)
         {
-            if (obj is not IBattleNpc { SubKind: (byte)BattleNpcSubKind.Pet } pet)
-                continue;
+            switch (obj)
+            {
+                case IPlayerCharacter player:
+                    var job = player.ClassJob.RowId;
+                    if (job != 0)
+                        playerJobs[player.GameObjectId] = job;
+                    break;
 
-            var ownerId = pet.OwnerId;
-
-            // Not somebody else's pet - always leave visible.
-            if (ownerId == 0 || ownerId == localId)
-            {
-                Show(pet);
-                continue;
-            }
-
-            bool isOthersBeast;
-            if (ObjectTable.SearchById(ownerId) is IPlayerCharacter owner && owner.ClassJob.RowId != 0)
-            {
-                // Owner is resolvable this sweep - trust it and refresh the cache.
-                isOthersBeast = owner.ClassJob.RowId == jobId.Value;
-                ownerIsBeastmaster[ownerId] = isOthersBeast;
-            }
-            else if (ownerIsBeastmaster.TryGetValue(ownerId, out var cached))
-            {
-                // Owner streamed out (common in a crowd) but we've classified them before.
-                isOthersBeast = cached;
-            }
-            else
-            {
-                // Never seen this owner resolvable. Don't un-hide a pet we're already
-                // hiding just because the owner blipped out; otherwise leave it alone.
-                if (hiddenObjectIds.Contains(pet.GameObjectId))
-                {
-                    seenThisSweep.Add(pet.GameObjectId);
-                    Hide(pet);
-                }
-                continue;
-            }
-
-            if (isOthersBeast)
-            {
-                seenThisSweep.Add(pet.GameObjectId);
-                Hide(pet);
-            }
-            else
-            {
-                Show(pet);
+                case IBattleNpc { SubKind: (byte)BattleNpcSubKind.Pet } pet:
+                    petsThisSweep.Add((pet.GameObjectId, pet.ObjectIndex, pet.Address, pet.OwnerId));
+                    petIdsThisSweep.Add(pet.GameObjectId);
+                    break;
             }
         }
 
-        hiddenObjectIds.IntersectWith(seenThisSweep);
+        foreach (var (petId, petIndex, petAddress, ownerId) in petsThisSweep)
+        {
+            bool hide;
+            if (ownerId == 0 || ownerId == localId)
+            {
+                // unowned or ours - leave it
+                hide = false;
+            }
+            else if (playerJobs.TryGetValue(ownerId, out var ownerJob))
+            {
+                hide = ownerJob == beastJobId;
+                ownerIsBeastmaster[ownerId] = hide;
+            }
+            else if (ownerIsBeastmaster.TryGetValue(ownerId, out var cached))
+            {
+                // owner's gone this sweep, use what we saw last time
+                hide = cached;
+            }
+            else
+            {
+                // unknown owner - keep hiding it if we already were, but don't start now
+                hide = hiddenPets.ContainsKey(petId);
+            }
+
+            if (hide)
+            {
+                if (!hiddenPets.ContainsKey(petId))
+                    SetDraw(petAddress, false);
+                hiddenPets[petId] = petIndex;
+            }
+            else if (hiddenPets.Remove(petId))
+            {
+                SetDraw(petAddress, true);
+            }
+        }
+
+        // drop pets that left the table entirely. they get re-checked if they come back.
+        pendingRemovals.Clear();
+        foreach (var id in hiddenPets.Keys)
+        {
+            if (!petIdsThisSweep.Contains(id))
+                pendingRemovals.Add(id);
+        }
+        foreach (var id in pendingRemovals)
+            hiddenPets.Remove(id);
     }
 
-    private unsafe void Hide(IBattleNpc pet)
+    private static unsafe void SetDraw(nint address, bool enabled)
     {
-        // Must run every sweep, not just once: the game keeps flipping the render flag
-        // back on for actively-animating pets, so a one-shot DisableDraw() won't stick.
-        hiddenObjectIds.Add(pet.GameObjectId);
-
-        var character = (Character*)pet.Address;
-        if (character != null)
-            character->DisableDraw();
-    }
-
-    private unsafe void Show(IBattleNpc pet)
-    {
-        if (!hiddenObjectIds.Remove(pet.GameObjectId))
+        var gameObject = (GameObject*)address;
+        if (gameObject is null)
             return;
 
-        var character = (Character*)pet.Address;
-        if (character != null)
-            character->EnableDraw();
+        if (enabled)
+            gameObject->EnableDraw();
+        else
+            gameObject->DisableDraw();
     }
 
     // Re-enables drawing for every companion still tracked as hidden.
     public unsafe void RestoreAllHidden()
     {
-        if (hiddenObjectIds.Count == 0)
-            return;
-
-        foreach (var obj in ObjectTable)
+        foreach (var (id, index) in hiddenPets)
         {
-            if (obj is IBattleNpc { SubKind: (byte)BattleNpcSubKind.Pet } pet && hiddenObjectIds.Contains(pet.GameObjectId))
-            {
-                var character = (Character*)pet.Address;
-                if (character != null)
-                    character->EnableDraw();
-            }
+            var obj = ObjectTable[index];
+            if (obj is null || obj.GameObjectId != id)
+                continue;
+
+            SetDraw(obj.Address, true);
         }
 
-        hiddenObjectIds.Clear();
+        hiddenPets.Clear();
+        ownerIsBeastmaster.Clear();
     }
 
     private uint? GetBeastmasterJobId()

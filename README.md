@@ -32,8 +32,7 @@ For development:
 
 1. `/xlsettings` → Experimental → Dev Plugin Locations → add the folder containing the built DLL.
 2. `/xlplugins` → Dev Tools tab → enable "Hide Beasts".
-3. `/hidebeasts` opens settings. `/hidebeastsdebug` dumps nearby BattleNpcs to `/xllog` if you
-   need to re-diagnose object kinds after a patch.
+3. `/hidebeasts` opens settings; `/hidebeasts on|off|toggle` switches it without the window.
 
 For everyone else, it's distributed through [AzeraKih-Plugins](https://github.com/BlackScalesAuri/AzeraKih-Plugins).
 
