@@ -40,12 +40,15 @@ public sealed class Plugin : IDalamudPlugin
     // hidden beasts: object id -> table slot, so enforcement can re-find them without a scan.
     private readonly Dictionary<ulong, int> hiddenPets = new();
 
-    // owner id -> is a Beastmaster. lets us keep hiding a pet while its owner is briefly out
-    // of the object table in a crowd. cleared on zone change.
-    private readonly Dictionary<ulong, bool> ownerIsBeastmaster = new();
+    // beast owners -> their friend/party/fc facts, kept across sweeps so a pet holds its state
+    // while the owner blips out of range. cleared on zone.
+    private readonly Dictionary<ulong, OwnerInfo> ownerCache = new();
+
+    // every visible player by id, rebuilt each sweep. lets us find a pet's owner without a
+    // table scan. only held during the sweep.
+    private readonly Dictionary<ulong, IPlayerCharacter> sweepPlayers = new();
 
     // reused every sweep so a sweep allocates nothing.
-    private readonly Dictionary<ulong, uint> playerJobs = new();
     private readonly List<(ulong Id, int Index, nint Address, ulong OwnerId)> petsThisSweep = new();
     private readonly HashSet<ulong> petIdsThisSweep = new();
     private readonly List<ulong> pendingRemovals = new();
@@ -139,7 +142,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         // Object table gets rebuilt on zone transition; nothing to restore.
         hiddenPets.Clear();
-        ownerIsBeastmaster.Clear();
+        ownerCache.Clear();
         frameCounter = 0;
     }
 
@@ -163,7 +166,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
         frameCounter = 0;
 
-        Classify(localPlayer.GameObjectId, jobId.Value);
+        Classify(localPlayer, jobId.Value);
     }
 
     // re-hide known pets whose draw the game turned back on.
@@ -182,21 +185,33 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     // full sweep: find nearby pets, work out whose they are, hide other Beastmasters'.
-    private unsafe void Classify(ulong localId, uint beastJobId)
+    private unsafe void Classify(IPlayerCharacter localPlayer, uint beastJobId)
     {
-        playerJobs.Clear();
+        var localId = localPlayer.GameObjectId;
+
+        // FC members: the game gives us no FC id for other players, only the short tag string.
+        // tags are only ~unique per world, not globally, so "same tag = same FC" is only safe
+        // when the players around you are from your world - i.e. you're on your home world.
+        // off-world we skip it entirely (the crowd is other worlds' players, and your FC is a
+        // home-world thing anyway). also needs you to be in an FC. rare miss: a visitor to
+        // your home world whose own FC happens to use your exact tag.
+        var checkFc = Configuration.ShowFcSummons
+                      && localPlayer.HomeWorld.RowId == localPlayer.CurrentWorld.RowId;
+        var myFcTag = checkFc ? localPlayer.CompanyTag.TextValue : string.Empty;
+        checkFc = myFcTag.Length > 0;
+
+        sweepPlayers.Clear();
         petsThisSweep.Clear();
         petIdsThisSweep.Clear();
 
-        // one pass: grab player jobs and pets together, no per-pet SearchById.
+        // one pass: just index players and collect pets. the flag/tag reads happen later,
+        // only for players that actually own a beast.
         foreach (var obj in ObjectTable)
         {
             switch (obj)
             {
                 case IPlayerCharacter player:
-                    var job = player.ClassJob.RowId;
-                    if (job != 0)
-                        playerJobs[player.GameObjectId] = job;
+                    sweepPlayers[player.GameObjectId] = player;
                     break;
 
                 case IBattleNpc { SubKind: (byte)BattleNpcSubKind.Pet } pet:
@@ -214,15 +229,28 @@ public sealed class Plugin : IDalamudPlugin
                 // unowned or ours - leave it
                 hide = false;
             }
-            else if (playerJobs.TryGetValue(ownerId, out var ownerJob))
+            else if (sweepPlayers.TryGetValue(ownerId, out var owner))
             {
-                hide = ownerJob == beastJobId;
-                ownerIsBeastmaster[ownerId] = hide;
+                if (owner.ClassJob.RowId != beastJobId)
+                {
+                    ownerCache.Remove(ownerId);
+                    hide = false;
+                }
+                else
+                {
+                    var flags = owner.StatusFlags;
+                    var info = new OwnerInfo(
+                        (flags & StatusFlags.Friend) != 0,
+                        (flags & StatusFlags.PartyMember) != 0,
+                        checkFc && owner.CompanyTag.TextValue == myFcTag);
+                    ownerCache[ownerId] = info;
+                    hide = !Exempt(info);
+                }
             }
-            else if (ownerIsBeastmaster.TryGetValue(ownerId, out var cached))
+            else if (ownerCache.TryGetValue(ownerId, out var cached))
             {
-                // owner's gone this sweep, use what we saw last time
-                hide = cached;
+                // owner blipped out of range - go with what we last saw
+                hide = !Exempt(cached);
             }
             else
             {
@@ -251,6 +279,8 @@ public sealed class Plugin : IDalamudPlugin
         }
         foreach (var id in pendingRemovals)
             hiddenPets.Remove(id);
+
+        sweepPlayers.Clear(); // don't hold wrapper refs between sweeps
     }
 
     private static unsafe void SetDraw(nint address, bool enabled)
@@ -278,8 +308,16 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         hiddenPets.Clear();
-        ownerIsBeastmaster.Clear();
+        ownerCache.Clear();
     }
+
+    // does an enabled exception cover this owner?
+    private bool Exempt(OwnerInfo o) =>
+        (Configuration.ShowFriendSummons && o.IsFriend) ||
+        (Configuration.ShowPartySummons && o.IsParty) ||
+        (Configuration.ShowFcSummons && o.IsFcMember);
+
+    private readonly record struct OwnerInfo(bool IsFriend, bool IsParty, bool IsFcMember);
 
     private uint? GetBeastmasterJobId()
     {

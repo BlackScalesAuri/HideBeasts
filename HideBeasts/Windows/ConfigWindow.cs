@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Components;
 using Dalamud.Interface.Windowing;
 
 namespace HideBeasts.Windows;
@@ -28,9 +29,44 @@ public class ConfigWindow : Window, IDisposable
             plugin.SetEnabled(enabled);
         }
 
-        ImGui.TextWrapped(
-            "When enabled, Beastmaster companions summoned by other players are hidden. " +
-            "Your own beast companion is always left visible.");
+        ImGui.TextWrapped("Hides other players' Beastmaster companions. Your own is always shown.");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        ImGui.TextDisabled("Keep these players' beasts visible:");
+        ImGui.BeginDisabled(!configuration.Enabled);
+
+        var changed = false;
+
+        var friends = configuration.ShowFriendSummons;
+        if (ImGui.Checkbox("Friends", ref friends))
+        {
+            configuration.ShowFriendSummons = friends;
+            changed = true;
+        }
+
+        var fc = configuration.ShowFcSummons;
+        if (ImGui.Checkbox("Free Company members", ref fc))
+        {
+            configuration.ShowFcSummons = fc;
+            changed = true;
+        }
+        ImGuiComponents.HelpMarker("Only works while you're on your home world.");
+
+        var party = configuration.ShowPartySummons;
+        if (ImGui.Checkbox("Party members", ref party))
+        {
+            configuration.ShowPartySummons = party;
+            changed = true;
+        }
+
+        ImGui.EndDisabled();
+
+        // save after EndDisabled: Save() can throw on file i/o and we mustn't skip EndDisabled.
+        if (changed)
+            configuration.Save();
 
         ImGui.Spacing();
         ImGui.Separator();
