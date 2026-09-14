@@ -23,6 +23,15 @@ public class ConfigWindow : Window, IDisposable
 
     public override void Draw()
     {
+        ImGui.TextColored(new Vector4(1f, 0.3f, 0.3f, 1f), "Discontinued.");
+        ImGui.TextWrapped(
+            "The main repo's \"Visibility\" plugin now does the same thing. Please switch to it - " +
+            "Hide Beasts won't get further updates.");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
         var enabled = configuration.Enabled;
         if (ImGui.Checkbox("Hide other players' beasts", ref enabled))
         {

@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>1.0.0.3</Version>
+    <Version>1.0.0.4</Version>
     <!-- Manifest fields (see https://github.com/goatcorp/DalamudPackager/blob/827d88dc/DalamudPackager/DalamudPackager.cs#L420) -->
     <Author>AzeraKih</Author>
     <Name>Hide Beasts</Name>
-    <Punchline>Hides other players' Beastmaster companions while keeping your own visible.</Punchline>
-    <Description>Automatically disables rendering of Beastmaster beast companions summoned by other players, to reduce visual clutter. Your own beast is never hidden.</Description>
-    <Changelog>- Keep Friends', FC members' and Party members' beasts visible - new options in Settings.
-- Lighter and smoother in crowded areas.</Changelog>
+    <Punchline>Discontinued - use "Visibility" from the main repo instead.</Punchline>
+    <Description>This plugin is discontinued. The main repo's "Visibility" plugin now covers the same functionality - please install that and remove Hide Beasts. No further updates will be made.</Description>
+    <Changelog>- Hide Beasts is discontinued. The main repo's "Visibility" plugin now does the same thing - please switch to it.
+- This is the final release. The plugin keeps working for now, but won't be updated further.</Changelog>
     <RepoUrl>https://github.com/BlackScalesAuri/HideBeasts</RepoUrl>
     <IconUrl>https://raw.githubusercontent.com/BlackScalesAuri/HideBeasts/master/HideBeasts/Images/icon.png</IconUrl>
     <Tags>beastmaster;bst;visibility;pets</Tags>

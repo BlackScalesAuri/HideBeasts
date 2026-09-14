@@ -2,9 +2,9 @@
   "Author": "AzeraKih",
   "Name": "Hide Beasts",
   "InternalName": "HideBeasts",
-  "AssemblyVersion": "1.0.0.3",
-  "Description": "Automatically disables rendering of Beastmaster beast companions summoned by other players, to reduce visual clutter. Your own beast is never hidden.",
-  "Changelog": "- Keep Friends', FC members' and Party members' beasts visible - new options in Settings.\n- Lighter and smoother in crowded areas.",
+  "AssemblyVersion": "1.0.0.4",
+  "Description": "This plugin is discontinued. The main repo's \"Visibility\" plugin now covers the same functionality - please install that and remove Hide Beasts. No further updates will be made.",
+  "Changelog": "- Hide Beasts is discontinued. The main repo's \"Visibility\" plugin now does the same thing - please switch to it.\n- This is the final release. The plugin keeps working for now, but won't be updated further.",
   "ApplicableVersion": "any",
   "RepoUrl": "https://github.com/BlackScalesAuri/HideBeasts",
   "IconUrl": "https://raw.githubusercontent.com/BlackScalesAuri/HideBeasts/master/HideBeasts/Images/icon.png",
@@ -19,6 +19,6 @@
   "LoadSync": false,
   "CanUnloadAsync": false,
   "LoadPriority": 0,
-  "Punchline": "Hides other players' Beastmaster companions while keeping your own visible.",
+  "Punchline": "Discontinued - use \"Visibility\" from the main repo instead.",
   "AcceptsFeedback": true
 }

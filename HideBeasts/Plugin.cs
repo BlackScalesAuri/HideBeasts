@@ -80,6 +80,9 @@ public sealed class Plugin : IDalamudPlugin
         ClientState.TerritoryChanged += OnTerritoryChanged;
 
         Log.Information("HideBeasts loaded.");
+
+        // discontinued: the main repo's "Visibility" plugin covers this now.
+        ChatGui.Print("[HideBeasts] This plugin is discontinued - install \"Visibility\" from the main repo instead.");
     }
 
     public void Dispose()
