@@ -1,14 +1,12 @@
 # Hide Beasts
 
-**Discontinued.** The official [Visibility](https://github.com/SheepGoMeh/VisibilityPlugin) plugin (in
+**Discontinued.** The official Visibility plugin (in
 the main Dalamud plugin repo) now covers this - install that instead. This repo won't get further
 updates and has been pulled from
 [AzeraKih-Plugins](https://github.com/BlackScalesAuri/AzeraKih-Plugins), so it can no longer be
 freshly installed.
 
 Dalamud plugin for FFXIV. Hides other players' Beastmaster (BST) companions. Your own beast stays visible.
-
-Based on [goatcorp/SamplePlugin](https://github.com/goatcorp/SamplePlugin).
 
 ## How it works
 
